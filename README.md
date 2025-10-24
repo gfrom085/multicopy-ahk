@@ -98,8 +98,7 @@ multicopy-ahk/
 
 - Séparateur entre éléments
 - Encodage des fichiers
-- Format du nom de fichier
-- Raccourcis clavier
+- Nombre de lignes de prévisualisation dans le viewer
 
 ## Tests d'Acceptation
 

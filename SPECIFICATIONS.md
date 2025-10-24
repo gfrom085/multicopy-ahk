@@ -108,6 +108,10 @@ Action colle → Lire archive-X.md + coller + supprimer pointeur
 
 #### Liste d'Archives
 
+**Ordre des archives** :
+- Triées par date **décroissante** (plus récent en premier)
+- Le format de nom `YYYY-MM-DD_HH-MM-SS.md` permet un tri alphabétique inverse
+
 **Affichage par archive** :
 ```
 Format : [NomArchive] (gras)
@@ -130,18 +134,24 @@ Item 2
 
 Si archive contient **> 5 items** (ex: 12 items) :
 ```
-+7          ← (12 - 5 + 1 = 8 items masqués, affichage "+7")
-Item 9
++8          ← Calcul: 12 - 5 + 1 = 8 items masqués (lignes 1-8)
+Item 9      ← Ligne 9 (première visible)
 Item 10
 Item 11
-Item 12
+Item 12     ← Ligne 12 (dernière)
 ```
+**Formule** : `hidden = total - count + 1`
+Le résultat contient toujours exactement `count` lignes (1 ligne +N + count-1 dernières lignes)
 
 **Actions** :
 - Clic sur archive → ouvrir éditeur
 - Bouton "Ouvrir dossier" → `explorer.exe data\archives\`
 
 #### Éditeur d'Archive
+
+**Note importante** : La même interface d'édition est utilisée pour :
+- Les archives sélectionnées dans le viewer
+- Le buffer actif (fichier pointé par `buffer.pointer`)
 
 **Composants** :
 - Zone texte multi-ligne (tout le contenu)

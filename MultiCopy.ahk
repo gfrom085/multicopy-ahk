@@ -19,7 +19,6 @@ global CONFIG_FILE := DATA_DIR . "\config.ini"
 ; Configuration par défaut
 global SEPARATOR := "`n"
 global ENCODING := "UTF-8"
-global ARCHIVE_FORMAT := "YYYY-MM-DD_HH-MM-SS"
 global PREVIEW_LINES := 5
 
 ; ==============================================================================
@@ -74,7 +73,6 @@ LoadConfig() {
     if FileExist(CONFIG_FILE) {
         global SEPARATOR := IniRead(CONFIG_FILE, "MultiCopy", "Separator", "`n")
         global ENCODING := IniRead(CONFIG_FILE, "MultiCopy", "Encoding", "UTF-8")
-        global ARCHIVE_FORMAT := IniRead(CONFIG_FILE, "MultiCopy", "ArchiveNameFormat", "YYYY-MM-DD_HH-MM-SS")
         global PREVIEW_LINES := IniRead(CONFIG_FILE, "Viewer", "PreviewLines", 5)
     }
 }
@@ -256,8 +254,38 @@ GetAllArchives() {
         archives.Push(A_LoopFileFullPath)
     }
 
-    ; TODO: Trier par date (plus récent en premier)
+    ; Trier par nom (timestamp ISO) décroissant (plus récent en premier)
+    ; Le format YYYY-MM-DD_HH-MM-SS.md permet un tri alphabétique
+    if (archives.Length > 0) {
+        archives := SortArchivesByName(archives)
+    }
 
+    return archives
+}
+
+/**
+ * Trie un tableau d'archives par nom décroissant
+ * @param {Array} archives Tableau de chemins
+ * @return {Array} Tableau trié
+ */
+SortArchivesByName(archives) {
+    ; Tri par insertion simple (suffisant pour petites listes)
+    n := archives.Length
+    loop n - 1 {
+        i := A_Index
+        loop n - i {
+            j := n - A_Index + 1
+            ; Extraire les noms de fichiers
+            name1 := SubStr(archives[j-1], InStr(archives[j-1], "\",, -1) + 1)
+            name2 := SubStr(archives[j], InStr(archives[j], "\",, -1) + 1)
+            ; Comparer (ordre décroissant)
+            if (name1 < name2) {
+                temp := archives[j-1]
+                archives[j-1] := archives[j]
+                archives[j] := temp
+            }
+        }
+    }
     return archives
 }
 
@@ -299,9 +327,13 @@ GetLastLines(archivePath, count := 5) {
     total := lines.Length
 
     if (total <= count) {
-        ; Moins de N lignes, retourner toutes
+        ; Moins de N lignes, retourner toutes + padding pour atteindre N lignes
         for line in lines {
             result.Push(line)
+        }
+        ; Ajouter lignes vides jusqu'à atteindre count (uniformité)
+        while (result.Length < count) {
+            result.Push("")
         }
     } else {
         ; Plus de N lignes, retourner +X et les (N-1) dernières
