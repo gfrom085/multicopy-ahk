@@ -71,7 +71,11 @@ InitDirectories() {
  */
 LoadConfig() {
     if FileExist(CONFIG_FILE) {
-        global SEPARATOR := IniRead(CONFIG_FILE, "MultiCopy", "Separator", "`n")
+        ; Lire le séparateur et interpréter \n comme LF
+        sep := IniRead(CONFIG_FILE, "MultiCopy", "Separator", "\n")
+        ; Si c'est la chaîne littérale "\n", convertir en vrai LF
+        global SEPARATOR := (sep = "\n") ? "`n" : "`n"  ; v1: toujours LF
+
         global ENCODING := IniRead(CONFIG_FILE, "MultiCopy", "Encoding", "UTF-8")
         global PREVIEW_LINES := IniRead(CONFIG_FILE, "Viewer", "PreviewLines", 5)
     }
@@ -81,44 +85,75 @@ LoadConfig() {
  * Copier cumulatif - Ajoute la sélection au buffer
  */
 CumulativeCopy() {
-    ; TODO: Implémenter
-    ; 1. Capturer clipboard (Send ^c)
-    ; 2. Attendre disponibilité (ClipWait)
-    ; 3. Nettoyer format → texte brut
-    ; 4. Si buffer.pointer absent → créer nouvelle archive
-    ; 5. Append texte au fichier pointé
+    ; Envoyer Ctrl+C pour copier la sélection
+    Send("^c")
 
-    MsgBox("CumulativeCopy - À implémenter")
+    ; Attendre que le clipboard soit disponible (timeout 1s)
+    if !ClipWait(1) {
+        MsgBox("Clipboard inaccessible, réessayez")
+        return
+    }
+
+    ; Récupérer le contenu du clipboard
+    text := A_Clipboard
+
+    ; AppendToBuffer gère:
+    ; - Normalisation CRLF->LF
+    ; - Ignorer si vide (silencieusement)
+    ; - Assurer séparateur unique
+    ; - Créer buffer/archive si absent
+    AppendToBuffer(text)
 }
 
 /**
  * Couper cumulatif - Ajoute la sélection au buffer puis la supprime
  */
 CumulativeCut() {
-    ; TODO: Implémenter
-    ; 1. Appeler CumulativeCopy()
-    ; 2. Supprimer la sélection originale (Send Delete)
+    ; Copier d'abord au buffer
+    CumulativeCopy()
 
-    MsgBox("CumulativeCut - À implémenter")
+    ; Puis supprimer la sélection originale
+    Send("{Delete}")
 }
 
 /**
  * Coller groupé - Colle le buffer et l'archive
  */
 GroupPaste() {
-    ; TODO: Implémenter
-    ; 1. Vérifier si buffer.pointer existe
-    ; 2. Si OUI:
-    ;    - Lire contenu du fichier pointé
-    ;    - Définir clipboard = contenu
-    ;    - Envoyer Ctrl+V
-    ;    - Supprimer buffer.pointer
-    ; 3. Si NON:
-    ;    - Créer archive vide
-    ;    - Coller vide
-    ;    - Ne pas créer pointeur
+    if BufferExists() {
+        ; Cas 1: Buffer actif - lire et coller
+        archivePath := GetBufferPath()
 
-    MsgBox("GroupPaste - À implémenter")
+        ; Lire le contenu de l'archive
+        content := ReadArchive(archivePath)
+
+        ; Convertir LF -> CRLF pour compatibilité Windows
+        content := StrReplace(content, "`r", "")    ; Strip \r d'abord (sécurité)
+        content := StrReplace(content, "`n", "`r`n")  ; LF -> CRLF
+
+        ; Coller via clipboard
+        A_Clipboard := content
+        Send("^v")
+
+        ; Supprimer le pointeur (archive persiste)
+        DeleteBufferPointer()
+    } else {
+        ; Cas 2: Buffer vide (Test T1) - créer archive vide et coller
+        ; Générer nom de fichier timestamp
+        timestamp := FormatTime(, "yyyy-MM-dd_HH-mm-ss")
+        archivePath := ARCHIVES_DIR . "\" . timestamp . ".md"
+
+        ; Créer archive vide (0 bytes)
+        try {
+            FileAppend("", archivePath, ENCODING)
+        }
+
+        ; Coller clipboard vide
+        A_Clipboard := ""
+        Send("^v")
+
+        ; NE PAS créer buffer.pointer (reste vide pour prochaine copie)
+    }
 }
 
 /**
@@ -164,6 +199,42 @@ GetBufferPath() {
 }
 
 /**
+ * Définit le chemin du buffer actif dans buffer.pointer
+ * @param {String} path Chemin absolu de l'archive à pointer
+ */
+SetBufferPath(path) {
+    try {
+        if FileExist(BUFFER_POINTER) {
+            FileDelete(BUFFER_POINTER)
+        }
+    }
+    try {
+        FileAppend(path, BUFFER_POINTER, ENCODING)
+    } catch as err {
+        MsgBox("Erreur: Impossible de créer buffer.pointer`n" . err.Message)
+    }
+}
+
+/**
+ * Normalise un texte en LF pur (retire tous les \r)
+ * @param {String} text Texte à normaliser
+ * @return {String} Texte avec seulement LF
+ */
+NormalizeToLF(text) {
+    return StrReplace(text, "`r", "")
+}
+
+/**
+ * Assure qu'un texte se termine par exactement un séparateur
+ * @param {String} text Texte à traiter
+ * @return {String} Texte avec un séparateur final unique
+ */
+EnsureEndsWithSeparator(text) {
+    text := RTrim(text, "`n")  ; Retirer tous les \n à la fin
+    return text . SEPARATOR     ; Ajouter exactement UN séparateur
+}
+
+/**
  * Crée une nouvelle archive et met à jour le pointeur
  * @return {String} Chemin de la nouvelle archive
  */
@@ -181,15 +252,7 @@ CreateNewArchive() {
     }
 
     ; Mettre à jour le pointeur
-    try {
-        FileDelete(BUFFER_POINTER)
-    }
-    try {
-        FileAppend(archivePath, BUFFER_POINTER, ENCODING)
-    } catch as err {
-        MsgBox("Erreur: Impossible de créer buffer.pointer`n" . err.Message)
-        return ""
-    }
+    SetBufferPath(archivePath)
 
     return archivePath
 }
@@ -200,6 +263,17 @@ CreateNewArchive() {
  * @return {Boolean} True si succès
  */
 AppendToBuffer(text) {
+    ; Normaliser le texte (CRLF -> LF)
+    text := NormalizeToLF(text)
+
+    ; Ignorer silencieusement si texte vide
+    if (Trim(text) = "") {
+        return true
+    }
+
+    ; Assurer exactement un séparateur final
+    text := EnsureEndsWithSeparator(text)
+
     ; Si pas de buffer, en créer un
     archivePath := GetBufferPath()
     if (archivePath = "") {
@@ -218,9 +292,9 @@ AppendToBuffer(text) {
         }
     }
 
-    ; Append texte + séparateur
+    ; Append texte (déjà avec séparateur)
     try {
-        FileAppend(text . SEPARATOR, archivePath, ENCODING)
+        FileAppend(text, archivePath, ENCODING)
         return true
     } catch as err {
         MsgBox("Erreur: Impossible d'écrire dans l'archive`n" . err.Message)
