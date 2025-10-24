@@ -71,10 +71,9 @@ InitDirectories() {
  */
 LoadConfig() {
     if FileExist(CONFIG_FILE) {
-        ; Lire le séparateur et interpréter \n comme LF
-        sep := IniRead(CONFIG_FILE, "MultiCopy", "Separator", "\n")
-        ; Si c'est la chaîne littérale "\n", convertir en vrai LF
-        global SEPARATOR := (sep = "\n") ? "`n" : "`n"  ; v1: toujours LF
+        ; Pour v1: toujours utiliser LF, ignorer la config
+        ; La valeur config.ini "Separator=\n" est documentaire uniquement
+        global SEPARATOR := "`n"
 
         global ENCODING := IniRead(CONFIG_FILE, "MultiCopy", "Encoding", "UTF-8")
         global PREVIEW_LINES := IniRead(CONFIG_FILE, "Viewer", "PreviewLines", 5)
@@ -146,6 +145,9 @@ GroupPaste() {
         ; Créer archive vide (0 bytes)
         try {
             FileAppend("", archivePath, ENCODING)
+        } catch as err {
+            ; Ignorer silencieusement - non critique pour T1
+            OutputDebug("Avertissement: Impossible de créer archive vide - " . err.Message)
         }
 
         ; Coller clipboard vide
@@ -207,7 +209,11 @@ SetBufferPath(path) {
         if FileExist(BUFFER_POINTER) {
             FileDelete(BUFFER_POINTER)
         }
+    } catch as err {
+        ; Ignorer - si delete échoue, FileAppend écrasera quand même
+        OutputDebug("Avertissement: Impossible de supprimer ancien buffer.pointer - " . err.Message)
     }
+
     try {
         FileAppend(path, BUFFER_POINTER, ENCODING)
     } catch as err {
@@ -310,6 +316,9 @@ DeleteBufferPointer() {
         if FileExist(BUFFER_POINTER) {
             FileDelete(BUFFER_POINTER)
         }
+    } catch as err {
+        ; Ignorer silencieusement - non critique
+        OutputDebug("Avertissement: Impossible de supprimer buffer.pointer - " . err.Message)
     }
 }
 
