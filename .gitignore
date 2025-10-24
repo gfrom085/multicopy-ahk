@@ -1,0 +1,11 @@
+# Runtime files
+data/buffer.pointer
+data/archives/*.md
+
+# Windows
+Thumbs.db
+desktop.ini
+
+# AutoHotkey
+*.exe
+*.bak
