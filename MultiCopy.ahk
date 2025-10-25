@@ -162,13 +162,7 @@ GroupPaste() {
  * Ouvre le viewer d'archives
  */
 OpenViewer() {
-    ; TODO: Implémenter
-    ; 1. Créer fenêtre GUI
-    ; 2. Lister toutes les archives
-    ; 3. Afficher preview (règle des 5 lignes)
-    ; 4. Boutons: Ouvrir dossier, Éditer archive
-
-    MsgBox("OpenViewer - À implémenter")
+    CreateViewerGUI()
 }
 
 ; ==============================================================================
@@ -440,11 +434,121 @@ GetLastLines(archivePath, count := 5) {
  * Crée et affiche la fenêtre du viewer
  */
 CreateViewerGUI() {
-    ; TODO: Implémenter
-    ; 1. Créer fenêtre principale
-    ; 2. ListView avec archives
-    ; 3. Preview 5 lignes par archive
-    ; 4. Boutons: Ouvrir dossier, Éditer
+    ; Créer fenêtre GUI
+    viewerGui := Gui()
+    viewerGui.Title := "MultiCopy - Viewer d'Archives"
+    viewerGui.Opt("+Resize")
+
+    ; Label d'information
+    viewerGui.Add("Text", "x10 y10 w840", "Archives (triées par date, plus récent en premier) :")
+
+    ; ListView avec 6 colonnes (Archive + L1..L5)
+    lv := viewerGui.Add("ListView", "x10 y35 w840 h400 Grid", ["Archive", "L1", "L2", "L3", "L4", "L5"])
+
+    ; Largeurs de colonnes
+    lv.ModifyCol(1, 180)  ; Archive (nom fichier)
+    lv.ModifyCol(2, 132)  ; L1
+    lv.ModifyCol(3, 132)  ; L2
+    lv.ModifyCol(4, 132)  ; L3
+    lv.ModifyCol(5, 132)  ; L4
+    lv.ModifyCol(6, 132)  ; L5
+
+    ; Remplir le ListView avec les archives
+    archives := GetAllArchives()
+    for archivePath in archives {
+        ; Extraire le nom de fichier
+        SplitPath(archivePath, &fileName)
+
+        ; Obtenir les 5 dernières lignes avec padding/+N
+        lines := GetLastLines(archivePath, 5)
+
+        ; Ajouter ligne au ListView
+        ; Si moins de 5 éléments dans lines, compléter avec vide
+        l1 := lines.Length >= 1 ? lines[1] : ""
+        l2 := lines.Length >= 2 ? lines[2] : ""
+        l3 := lines.Length >= 3 ? lines[3] : ""
+        l4 := lines.Length >= 4 ? lines[4] : ""
+        l5 := lines.Length >= 5 ? lines[5] : ""
+
+        lv.Add("", fileName, l1, l2, l3, l4, l5)
+    }
+
+    ; Boutons
+    btnOpenFolder := viewerGui.Add("Button", "x10 y445 w150", "Ouvrir dossier")
+    btnOpenFolder.OnEvent("Click", (*) => Run("explorer.exe " . ARCHIVES_DIR))
+
+    btnEdit := viewerGui.Add("Button", "x170 y445 w150", "Éditer sélection")
+    btnEdit.OnEvent("Click", (*) => EditSelectedArchive(lv))
+
+    btnEditBuffer := viewerGui.Add("Button", "x330 y445 w150", "Éditer buffer actif")
+    btnEditBuffer.OnEvent("Click", (*) => EditCurrentBuffer())
+
+    btnRefresh := viewerGui.Add("Button", "x490 y445 w150", "Rafraîchir")
+    btnRefresh.OnEvent("Click", (*) => RefreshViewer(lv))
+
+    btnClose := viewerGui.Add("Button", "x700 y445 w150", "Fermer")
+    btnClose.OnEvent("Click", (*) => viewerGui.Destroy())
+
+    ; Double-clic sur une archive -> éditer
+    lv.OnEvent("DoubleClick", (*) => EditSelectedArchive(lv))
+
+    ; Afficher la fenêtre
+    viewerGui.Show("w860 h480")
+}
+
+/**
+ * Édite l'archive sélectionnée dans le ListView
+ */
+EditSelectedArchive(lv) {
+    ; Obtenir la ligne sélectionnée
+    row := lv.GetNext()
+    if (row = 0) {
+        MsgBox("Aucune archive sélectionnée")
+        return
+    }
+
+    ; Obtenir le nom de fichier
+    fileName := lv.GetText(row, 1)
+    archivePath := ARCHIVES_DIR . "\" . fileName
+
+    ; Ouvrir l'éditeur
+    CreateEditorGUI(archivePath)
+}
+
+/**
+ * Édite le buffer actif (fichier pointé par buffer.pointer)
+ */
+EditCurrentBuffer() {
+    archivePath := GetBufferPath()
+    if (archivePath = "") {
+        MsgBox("Aucun buffer actif")
+        return
+    }
+
+    CreateEditorGUI(archivePath)
+}
+
+/**
+ * Rafraîchit la liste des archives
+ */
+RefreshViewer(lv) {
+    ; Vider le ListView
+    lv.Delete()
+
+    ; Recharger les archives
+    archives := GetAllArchives()
+    for archivePath in archives {
+        SplitPath(archivePath, &fileName)
+        lines := GetLastLines(archivePath, 5)
+
+        l1 := lines.Length >= 1 ? lines[1] : ""
+        l2 := lines.Length >= 2 ? lines[2] : ""
+        l3 := lines.Length >= 3 ? lines[3] : ""
+        l4 := lines.Length >= 4 ? lines[4] : ""
+        l5 := lines.Length >= 5 ? lines[5] : ""
+
+        lv.Add("", fileName, l1, l2, l3, l4, l5)
+    }
 }
 
 /**
@@ -452,9 +556,121 @@ CreateViewerGUI() {
  * @param {String} archivePath Chemin de l'archive à éditer
  */
 CreateEditorGUI(archivePath) {
-    ; TODO: Implémenter
-    ; 1. Zone texte multi-ligne
-    ; 2. Boutons: Save, Copier, Ajouter au buffer, Nouveau buffer
+    ; Extraire le nom du fichier
+    SplitPath(archivePath, &fileName)
+
+    ; Créer fenêtre GUI
+    editorGui := Gui()
+    editorGui.Title := "Éditeur - " . fileName
+    editorGui.Opt("+Resize")
+
+    ; Label d'information
+    editorGui.Add("Text", "x10 y10 w580", "Contenu de l'archive :")
+
+    ; Zone de texte multi-ligne
+    editControl := editorGui.Add("Edit", "x10 y35 w580 h350 Multi VScroll", "")
+
+    ; Charger le contenu du fichier
+    content := ""
+    if FileExist(archivePath) {
+        try {
+            content := FileRead(archivePath, ENCODING)
+        } catch as err {
+            MsgBox("Erreur lecture: " . err.Message)
+        }
+    }
+    editControl.Value := content
+
+    ; Boutons (4 comme demandé)
+    btnSave := editorGui.Add("Button", "x10 y395 w135", "Save")
+    btnSave.OnEvent("Click", (*) => SaveArchive(archivePath, editControl))
+
+    btnCopy := editorGui.Add("Button", "x155 y395 w135", "Copier presse-papiers")
+    btnCopy.OnEvent("Click", (*) => CopyToClipboard(editControl))
+
+    btnAddToBuffer := editorGui.Add("Button", "x300 y395 w135", "Ajouter au buffer")
+    btnAddToBuffer.OnEvent("Click", (*) => AddToCurrentBuffer(editControl))
+
+    btnNewBuffer := editorGui.Add("Button", "x445 y395 w145", "Nouveau buffer")
+    btnNewBuffer.OnEvent("Click", (*) => CreateNewBufferFromEditor(editControl))
+
+    ; Bouton fermer
+    btnClose := editorGui.Add("Button", "x250 y430 w100", "Fermer")
+    btnClose.OnEvent("Click", (*) => editorGui.Destroy())
+
+    ; Afficher la fenêtre
+    editorGui.Show("w600 h470")
+}
+
+/**
+ * Sauvegarde le contenu dans l'archive
+ */
+SaveArchive(archivePath, editControl) {
+    content := editControl.Value
+
+    try {
+        ; Supprimer et recréer le fichier
+        if FileExist(archivePath) {
+            FileDelete(archivePath)
+        }
+        FileAppend(content, archivePath, ENCODING)
+        MsgBox("Archive sauvegardée", "Succès", "T1")
+    } catch as err {
+        MsgBox("Erreur sauvegarde: " . err.Message, "Erreur")
+    }
+}
+
+/**
+ * Copie tout le contenu dans le presse-papiers
+ */
+CopyToClipboard(editControl) {
+    A_Clipboard := editControl.Value
+    MsgBox("Contenu copié dans le presse-papiers", "Succès", "T1")
+}
+
+/**
+ * Ajoute le contenu au buffer actif
+ */
+AddToCurrentBuffer(editControl) {
+    content := editControl.Value
+
+    if (Trim(content) = "") {
+        MsgBox("Aucun contenu à ajouter")
+        return
+    }
+
+    ; Normaliser et ajouter au buffer
+    AppendToBuffer(content)
+    MsgBox("Contenu ajouté au buffer actif", "Succès", "T1")
+}
+
+/**
+ * Crée un nouveau buffer et y place le contenu
+ */
+CreateNewBufferFromEditor(editControl) {
+    content := editControl.Value
+
+    ; Créer nouvelle archive
+    archivePath := CreateNewArchive()
+    if (archivePath = "") {
+        MsgBox("Erreur création nouveau buffer")
+        return
+    }
+
+    ; Si du contenu, l'ajouter
+    if (Trim(content) != "") {
+        try {
+            ; Normaliser et ajouter
+            content := NormalizeToLF(content)
+            content := EnsureEndsWithSeparator(content)
+            FileAppend(content, archivePath, ENCODING)
+        } catch as err {
+            MsgBox("Erreur écriture: " . err.Message)
+            return
+        }
+    }
+
+    MsgBox("Nouveau buffer créé: " . SubStr(archivePath, InStr(archivePath, "\", , -1) + 1), "Succès", "T1.5")
 }
 
 ; ==============================================================================
