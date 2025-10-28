@@ -1,6 +1,7 @@
 # Runtime files
 data/buffer.pointer
 data/archives/*.md
+data/logs/
 
 # Windows
 Thumbs.db

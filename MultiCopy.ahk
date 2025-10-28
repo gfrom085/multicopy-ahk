@@ -13,8 +13,10 @@
 global SCRIPT_DIR := A_ScriptDir
 global DATA_DIR := SCRIPT_DIR . "\data"
 global ARCHIVES_DIR := DATA_DIR . "\archives"
+global LOGS_DIR := DATA_DIR . "\logs"
 global BUFFER_POINTER := DATA_DIR . "\buffer.pointer"
 global CONFIG_FILE := DATA_DIR . "\config.ini"
+global LOG_FILE := ""  ; Sera défini au démarrage
 
 ; Configuration par défaut
 global SEPARATOR := "`n"
@@ -31,6 +33,9 @@ InitDirectories()
 ; Charger la configuration
 LoadConfig()
 
+; Créer un nouveau buffer au démarrage
+CreateNewArchive()
+
 ; ==============================================================================
 ; HOTKEYS GLOBAUX
 ; ==============================================================================
@@ -46,6 +51,12 @@ LoadConfig()
 
 ; Viewer (Ctrl+Alt+B)
 ^!b::OpenViewer()
+
+; Recharger le script (Ctrl+Alt+R)
+^!r::Reload
+
+; Quitter le script (Ctrl+Alt+Q)
+^!q::ExitApp
 
 ; ==============================================================================
 ; FONCTIONS PRINCIPALES
@@ -64,6 +75,21 @@ InitDirectories() {
     if !DirExist(ARCHIVES_DIR) {
         DirCreate(ARCHIVES_DIR)
     }
+
+    ; Créer data/logs/ si inexistant
+    if !DirExist(LOGS_DIR) {
+        DirCreate(LOGS_DIR)
+    }
+
+    ; Créer fichier de log pour cette session
+    timestamp := FormatTime(, "yyyy-MM-dd_HH-mm-ss")
+    global LOG_FILE := LOGS_DIR . "\session_" . timestamp . ".log"
+
+    ; Écrire header
+    LogWrite("=== MultiCopy Session Started ===")
+    LogWrite("Timestamp: " . timestamp)
+    LogWrite("Script Dir: " . SCRIPT_DIR)
+    LogWrite("================================")
 }
 
 /**
@@ -84,24 +110,38 @@ LoadConfig() {
  * Copier cumulatif - Ajoute la sélection au buffer
  */
 CumulativeCopy() {
+    ; Vider le clipboard pour forcer ClipWait à attendre un NOUVEAU contenu
+    A_Clipboard := ""
+
     ; Envoyer Ctrl+C pour copier la sélection
     Send("^c")
 
-    ; Attendre que le clipboard soit disponible (timeout 1s)
+    ; Attendre qu'un NOUVEAU contenu apparaisse dans le clipboard (timeout 1s)
     if !ClipWait(1) {
-        MsgBox("Clipboard inaccessible, réessayez")
+        LogWrite("CumulativeCopy: Aucune sélection copiée (timeout)", "WARN")
+        MsgBox("Rien n'a été copié. Sélectionnez du texte et réessayez.")
         return
     }
 
     ; Récupérer le contenu du clipboard
     text := A_Clipboard
 
+    ; Vérifier que le texte n'est pas vide
+    if (Trim(text) = "") {
+        LogWrite("CumulativeCopy: Texte vide ignoré", "DEBUG")
+        return
+    }
+
     ; AppendToBuffer gère:
     ; - Normalisation CRLF->LF
     ; - Ignorer si vide (silencieusement)
     ; - Assurer séparateur unique
     ; - Créer buffer/archive si absent
-    AppendToBuffer(text)
+    success := AppendToBuffer(text)
+    if (success) {
+        LogWrite("Copie ajoutée au buffer - Longueur: " . StrLen(text) . " chars", "DEBUG")
+        TrayTip("DEBUG", "Copie ajoutée au buffer", 1)
+    }
 }
 
 /**
@@ -119,9 +159,12 @@ CumulativeCut() {
  * Coller groupé - Colle le buffer et l'archive
  */
 GroupPaste() {
+    LogWrite("GroupPaste() appelé", "DEBUG")
     if BufferExists() {
         ; Cas 1: Buffer actif - lire et coller
         archivePath := GetBufferPath()
+        LogWrite("Paste depuis buffer: " . archivePath, "DEBUG")
+        TrayTip("DEBUG", "Paste depuis buffer: " . SubStr(archivePath, InStr(archivePath, "\",, -1) + 1), 2)
 
         ; Lire le contenu de l'archive
         content := ReadArchive(archivePath)
@@ -134,8 +177,11 @@ GroupPaste() {
         A_Clipboard := content
         Send("^v")
 
-        ; Supprimer le pointeur (archive persiste)
-        DeleteBufferPointer()
+        ; Créer un nouveau buffer pour la prochaine session
+        ; (SetBufferPath va gérer la suppression de l'ancien pointeur)
+        LogWrite("GroupPaste: Création nouveau buffer après paste", "DEBUG")
+        TrayTip("DEBUG", "GroupPaste: Création nouveau buffer...", 2)
+        CreateNewArchive()
     } else {
         ; Cas 2: Buffer vide (Test T1) - créer archive vide et coller
         ; Générer nom de fichier timestamp
@@ -154,7 +200,8 @@ GroupPaste() {
         A_Clipboard := ""
         Send("^v")
 
-        ; NE PAS créer buffer.pointer (reste vide pour prochaine copie)
+        ; Créer un nouveau buffer pour la prochaine session
+        CreateNewArchive()
     }
 }
 
@@ -183,13 +230,20 @@ BufferExists() {
  */
 GetBufferPath() {
     if !BufferExists() {
+        LogWrite("GetBufferPath: buffer.pointer n'existe pas", "WARN")
+        TrayTip("DEBUG", "GetBufferPath: buffer.pointer n'existe pas", 1)
         return ""
     }
 
     try {
         content := FileRead(BUFFER_POINTER, ENCODING)
-        return Trim(content)
-    } catch {
+        path := Trim(content)
+        LogWrite("GetBufferPath: " . path, "DEBUG")
+        TrayTip("DEBUG", "GetBufferPath: " . SubStr(path, InStr(path, "\",, -1) + 1), 1)
+        return path
+    } catch as err {
+        LogWrite("GetBufferPath: Erreur lecture - " . err.Message, "ERROR")
+        TrayTip("DEBUG", "GetBufferPath: Erreur lecture - " . err.Message, 2)
         return ""
     }
 }
@@ -199,19 +253,36 @@ GetBufferPath() {
  * @param {String} path Chemin absolu de l'archive à pointer
  */
 SetBufferPath(path) {
-    try {
-        if FileExist(BUFFER_POINTER) {
-            FileDelete(BUFFER_POINTER)
+    ; Supprimer l'ancien fichier s'il existe
+    loop 3 {  ; Retry jusqu'à 3 fois
+        try {
+            if FileExist(BUFFER_POINTER) {
+                FileDelete(BUFFER_POINTER)
+            }
+            break  ; Succès, sortir de la boucle
+        } catch as err {
+            if (A_Index = 3) {
+                ; Dernier essai raté, continuer quand même
+                OutputDebug("Avertissement: Impossible de supprimer buffer.pointer après 3 essais")
+            } else {
+                Sleep(50)  ; Attendre avant retry
+            }
         }
-    } catch as err {
-        ; Ignorer - si delete échoue, FileAppend écrasera quand même
-        OutputDebug("Avertissement: Impossible de supprimer ancien buffer.pointer - " . err.Message)
     }
 
+    ; Écrire le nouveau chemin avec FileOpen mode "w" (write/overwrite)
     try {
-        FileAppend(path, BUFFER_POINTER, ENCODING)
+        file := FileOpen(BUFFER_POINTER, "w", "UTF-8")  ; Mode "w" = écraser, UTF-8 encodage
+        if !file {
+            throw Error("FileOpen a retourné 0")
+        }
+        file.Write(path)
+        file.Close()
+        LogWrite("SetBufferPath: Pointeur écrit vers " . path, "DEBUG")
+        TrayTip("DEBUG", "Buffer pointer écrit: " . SubStr(path, InStr(path, "\",, -1) + 1), 1)
     } catch as err {
-        MsgBox("Erreur: Impossible de créer buffer.pointer`n" . err.Message)
+        LogWrite("SetBufferPath: ERREUR - " . err.Message, "ERROR")
+        MsgBox("ERREUR CRITIQUE: Impossible de créer buffer.pointer`n" . err.Message)
     }
 }
 
@@ -246,7 +317,10 @@ CreateNewArchive() {
     ; Créer fichier vide
     try {
         FileAppend("", archivePath, ENCODING)
+        LogWrite("CreateNewArchive: Nouveau buffer créé - " . archivePath, "INFO")
+        TrayTip("DEBUG", "Nouveau buffer créé: " . timestamp . ".md", 2)
     } catch as err {
+        LogWrite("CreateNewArchive: ERREUR - " . err.Message, "ERROR")
         MsgBox("Erreur: Impossible de créer l'archive`n" . err.Message)
         return ""
     }
@@ -277,6 +351,8 @@ AppendToBuffer(text) {
     ; Si pas de buffer, en créer un
     archivePath := GetBufferPath()
     if (archivePath = "") {
+        LogWrite("AppendToBuffer: Pas de buffer, création nécessaire", "WARN")
+        TrayTip("DEBUG", "AppendToBuffer: Pas de buffer, création...", 1)
         archivePath := CreateNewArchive()
         if (archivePath = "") {
             return false
@@ -286,6 +362,8 @@ AppendToBuffer(text) {
     ; Vérifier que l'archive existe
     if !FileExist(archivePath) {
         ; Archive supprimée, recréer
+        LogWrite("AppendToBuffer: Archive n'existe pas (" . archivePath . "), recréation...", "WARN")
+        TrayTip("DEBUG", "AppendToBuffer: Archive n'existe pas, recréation...", 1)
         archivePath := CreateNewArchive()
         if (archivePath = "") {
             return false
@@ -295,8 +373,10 @@ AppendToBuffer(text) {
     ; Append texte (déjà avec séparateur)
     try {
         FileAppend(text, archivePath, ENCODING)
+        LogWrite("AppendToBuffer: Texte ajouté à " . archivePath . " (" . StrLen(text) . " chars)", "DEBUG")
         return true
     } catch as err {
+        LogWrite("AppendToBuffer: ERREUR écriture - " . err.Message, "ERROR")
         MsgBox("Erreur: Impossible d'écrire dans l'archive`n" . err.Message)
         return false
     }
@@ -355,8 +435,8 @@ SortArchivesByName(archives) {
             ; Extraire les noms de fichiers
             name1 := SubStr(archives[j-1], InStr(archives[j-1], "\",, -1) + 1)
             name2 := SubStr(archives[j], InStr(archives[j], "\",, -1) + 1)
-            ; Comparer (ordre décroissant)
-            if (name1 < name2) {
+            ; Comparer (ordre décroissant) - StrCompare retourne <0 si name1 < name2
+            if (StrCompare(name1, name2) < 0) {
                 temp := archives[j-1]
                 archives[j-1] := archives[j]
                 archives[j] := temp
@@ -674,8 +754,32 @@ CreateNewBufferFromEditor(editControl) {
 }
 
 ; ==============================================================================
+; LOGGING
+; ==============================================================================
+
+/**
+ * Écrit une ligne dans le fichier de log de la session
+ * @param {String} message Message à logger
+ * @param {String} level Niveau: INFO, DEBUG, WARN, ERROR (défaut: INFO)
+ */
+LogWrite(message, level := "INFO") {
+    if (LOG_FILE = "") {
+        return  ; Pas encore initialisé
+    }
+
+    timestamp := FormatTime(, "yyyy-MM-dd HH:mm:ss")
+    logLine := "[" . timestamp . "] [" . level . "] " . message . "`n"
+
+    try {
+        FileAppend(logLine, LOG_FILE, "UTF-8")
+    } catch {
+        ; Ignorer silencieusement si échec
+    }
+}
+
+; ==============================================================================
 ; AIDE ET INFORMATIONS
 ; ==============================================================================
 
 ; Afficher notification au démarrage
-TrayTip("MultiCopy/Archive", "Script actif`n`nCtrl+Alt+C = Copier`nCtrl+Alt+V = Coller`nCtrl+Alt+B = Viewer", 5)
+TrayTip("MultiCopy/Archive", "Script actif`n`nCtrl+Alt+C = Copier`nCtrl+Alt+V = Coller`nCtrl+Alt+B = Viewer`n`nCtrl+Alt+R = Recharger`nCtrl+Alt+Q = Quitter", 5)
